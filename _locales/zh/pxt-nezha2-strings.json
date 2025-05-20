@@ -30,7 +30,7 @@
     "nezhaV2.setComboMotor|block": "将运转电机设置为左轮%motor_l 右轮%motor_r ",
     "nezhaV2.comboRun|block": "以%speed \\% 速度向 %direction 移动",
     "nezhaV2.comboStop|block": "停止运动",
-    "nezhaV2.setWheelPerimeter|block": "将电机旋转一圈设置为 %value %unit ",
+    "nezhaV2.setWheelPerimeter|block": "设置轮子周长为 %value %unit ",
     "nezhaV2.comboMove|block": "以%speed \\%速度向%direction 移动 %value %uint ",
     "nezhaV2.comboStart|block": "设置左轮速度为%speed_l \\%，设置右轮速度为%speed_r \\%并启动电机",
     "nezhaV2.readVersion|block": "版本号",
