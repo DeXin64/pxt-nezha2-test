@@ -332,7 +332,9 @@ namespace nezhaV2 {
         stop(motorRightGlobal)
     }
 
-
+    /**
+    * The distance length of the motor movement per circle
+    */
     //% group="Application functions"
     //% weight=404
     //%block="Set the wheel circumference to %value %unit"
