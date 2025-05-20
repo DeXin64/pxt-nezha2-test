@@ -332,10 +332,12 @@ namespace nezhaV2 {
         stop(motorRightGlobal)
     }
 
-
+    /**
+    * The distance length of the motor movement per circle
+    */
     //% group="Application functions"
     //% weight=404
-    //%block="Rotate the motor once and set it to %value %unit"
+    //%block="Set the wheel circumference to %value %unit"
     export function setWheelPerimeter(value: number, unit: Uint): void {
         if(value < 0){
             value = 0;
