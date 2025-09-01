@@ -16,7 +16,7 @@ namespace nezhaV2 {
         //%block="shortest path"
         ShortPath = 1
     }
-    
+
     export enum DelayMode {
         //%block="automatic delay"
         AutoDelayStatus = 1,
@@ -31,22 +31,22 @@ namespace nezhaV2 {
         //%block="seconds"
         Second = 3
     }
-    
-    
+
+
     export enum VerticallDirection {
         //%block="forward"
         Up = 1,
         //%block="backward"
         Down = 2
     }
-    
+
     export enum Uint {
         //%block="cm"
         cm = 1,
         //%block="inch"
         inch = 2
     }
-    
+
     export enum DistanceAndAngleUnit {
         //%block="degrees"
         Degree = 2,
@@ -59,7 +59,7 @@ namespace nezhaV2 {
         //%block="inch"
         inch = 5
     }
-    
+
     export enum MotorPostion {
         //%block="M1"
         M1 = 1,
@@ -70,6 +70,17 @@ namespace nezhaV2 {
         //%block="M4"
         M4 = 4
     }
+    export enum AccelerationProfile {
+        //%block="None"
+        None = 0,
+        //%block="slow"
+        Slow = 1,
+        //%block="medium"
+        Medium = 2,
+        //%block="fast"
+        Fast = 3
+    }
+
 
     let i2cAddr: number = 0x10;
     let servoSpeedGlobal = 900
@@ -79,6 +90,8 @@ namespace nezhaV2 {
     let motorLeftGlobal = 0
     let motorRightGlobal = 0
     let degreeToDistance = 0
+    // 全局加速曲线配置
+    let accelerationProfileGlobal = 0;//  默认不开启加速曲线
 
     export function delayMs(ms: number): void {
         let time = input.runningTime() + ms
@@ -101,6 +114,196 @@ namespace nezhaV2 {
         basic.pause(delayTime);
 
     }
+
+function control_motor(
+    target_distance_degrees: number,
+    accelerationProfile: number,
+    leftMotor: nezhaV2.MotorPostion = nezhaV2.MotorPostion.M1,
+    rightMotor: nezhaV2.MotorPostion = nezhaV2.MotorPostion.M2,
+    direction: VerticallDirection
+) {
+    // === Acceleration profile configuration ===
+    const ACCELERATION_PROFILES = [
+        { // Profile 1: Slow (optimized parameters)
+            KP: 0.15, KI: 0.004, KD: 0.2,
+            accelerationRate: 4, decelerationRate: 1.5,
+            maxAdjustment: 1.2, minAdjustment: 0.7,
+            minSpeed: 15, initialSpeed: 15,
+            decelStart: 0.8, finalDecelStart: 0.95,
+            maxSpeed: 40
+        },
+        { // Profile 2: Medium
+            KP: 0.18, KI: 0.005, KD: 0.15,
+            accelerationRate: 6, decelerationRate: 2,
+            maxAdjustment: 1.5, minAdjustment: 0.6,
+            minSpeed: 20, initialSpeed: 25,
+            decelStart: 0.7, finalDecelStart: 0.9,
+            maxSpeed: 60
+        },
+        { // Profile 3: Fast
+            KP: 0.2, KI: 0.006, KD: 0.1,
+            accelerationRate: 8, decelerationRate: 3,
+            maxAdjustment: 1.8, minAdjustment: 0.5,
+            minSpeed: 25, initialSpeed: 35,
+            decelStart: 0.6, finalDecelStart: 0.85,
+            maxSpeed: 80
+        }
+    ];
+
+    // Select acceleration profile
+    const profile = ACCELERATION_PROFILES[accelerationProfile - 1] || ACCELERATION_PROFILES[0];
+
+    // === Use selected profile parameters ===
+    const {
+        KP, KI, KD,
+        accelerationRate: ACCELERATION_RATE,
+        decelerationRate: DECELERATION_RATE,
+        maxAdjustment: MAX_ADJUSTMENT,
+        minAdjustment: MIN_ADJUSTMENT,
+        minSpeed: MIN_SPEED,
+        initialSpeed,
+        decelStart,
+        finalDecelStart,
+        maxSpeed
+    } = profile;
+
+    // === Other parameters ===
+    const SMOOTHING_FACTOR = 0.25;
+    const CONTROL_INTERVAL = 10;
+
+    // === Variable initialization ===
+    let currentSpeed = initialSpeed;
+    let errorIntegral = 0;
+    let lastError = 0;
+    let correction = 0;
+    let positionHistory: { left: number, right: number }[] = [];
+    const MAX_HISTORY = 5;
+
+    // === Record starting positions BEFORE starting motors ===
+    const startLeft = nezhaV2.readRelAngle(leftMotor);
+    const startRight = nezhaV2.readRelAngle(rightMotor);
+
+    // === Motor initialization ===
+    if (direction == VerticallDirection.Up) {
+        // Up: 左正转，右反转
+        nezhaV2.start(leftMotor, currentSpeed);
+        nezhaV2.start(rightMotor, -currentSpeed);
+    } else {
+        // Down: 左反转，右正转
+        nezhaV2.start(leftMotor, -currentSpeed);
+        nezhaV2.start(rightMotor, currentSpeed);
+    }
+
+    let lastLeft = 0;
+    let lastRight = 0;
+    let filteredRatio = 1;
+
+    // === Main control loop ===
+    while (true) {
+        basic.pause(CONTROL_INTERVAL);
+
+        // === Read current positions - 始终使用原始读数 ===
+        const rawLeft = nezhaV2.readRelAngle(leftMotor);
+        const rawRight = nezhaV2.readRelAngle(rightMotor);
+        
+        // 计算相对于起始位置的变化量
+        // 关键点：根据方向正确处理位移符号
+        const currentLeft = (direction === VerticallDirection.Up) 
+            ? (rawLeft - startLeft)       // Up: 左正转 -> 位移增加
+            : (startLeft - rawLeft);      // Down: 左反转 -> 位移增加（startLeft - rawLeft）
+            
+        const currentRight = (direction === VerticallDirection.Up) 
+            ? (startRight - rawRight)     // Up: 右反转 -> 位移增加（startRight - rawRight）
+            : (rawRight - startRight);     // Down: 右正转 -> 位移增加
+
+        // === Update position history ===
+        positionHistory.push({ left: currentLeft, right: currentRight });
+        if (positionHistory.length > MAX_HISTORY) {
+            positionHistory.shift();
+        }
+
+        // === Stop condition ===
+        const leftDistance = currentLeft;  // 由于已经处理过符号，可以直接使用
+        const rightDistance = currentRight; // 同上
+        
+        // 使用平均距离作为停止条件更合理
+        const avgDistance = (leftDistance + rightDistance) / 2;
+        
+        if (avgDistance >= target_distance_degrees) {
+            nezhaV2.stop(leftMotor);
+            nezhaV2.stop(rightMotor);
+            break;
+        }
+
+        // === PID controller calculation ===
+        const positionError = leftDistance - rightDistance;
+        const P = positionError * KP;
+
+        errorIntegral += positionError;
+        errorIntegral = Math.max(-1000, Math.min(1000, errorIntegral));
+        const I = errorIntegral * KI;
+
+        const D = (positionError - lastError) * KD;
+        lastError = positionError;
+
+        correction = P + I + D;
+
+        // === Dynamic differential control ===
+        const leftDiff = Math.max(Math.abs(currentLeft - lastLeft), 0.1);
+        const rightDiff = Math.max(Math.abs(currentRight - lastRight), 0.1);
+
+        const rawRatio = leftDiff / rightDiff + correction * 0.05;
+        filteredRatio = SMOOTHING_FACTOR * rawRatio + (1 - SMOOTHING_FACTOR) * filteredRatio;
+
+        let leftAdjustment = 1;
+        let rightAdjustment = 1;
+
+        if (filteredRatio < 1) {
+            leftAdjustment = Math.min(1.0 + (1 - filteredRatio) * 0.8, MAX_ADJUSTMENT);
+            rightAdjustment = Math.max(1.0 - (1 - filteredRatio) * 0.4, MIN_ADJUSTMENT);
+        } else {
+            rightAdjustment = Math.min(1.0 + (filteredRatio - 1) * 0.8, MAX_ADJUSTMENT);
+            leftAdjustment = Math.max(1.0 - (filteredRatio - 1) * 0.4, MIN_ADJUSTMENT);
+        }
+
+        // === Speed control ===
+        const maxPosition = Math.max(leftDistance, rightDistance);
+        const progress = maxPosition / target_distance_degrees;
+
+        let targetSpeed = currentSpeed;
+        if (progress < decelStart) {
+            // Acceleration phase
+            targetSpeed = Math.min(maxSpeed, currentSpeed + ACCELERATION_RATE);
+        } else if (progress < finalDecelStart) {
+            // First deceleration phase
+            const slowdownFactor = 1.0 - (progress - decelStart) / (finalDecelStart - decelStart) * 0.7;
+            targetSpeed = Math.max(MIN_SPEED, initialSpeed * slowdownFactor);
+        } else {
+            // Final slowdown phase
+            const slowdownFactor = 1.0 - (progress - finalDecelStart) / (1 - finalDecelStart);
+            targetSpeed = MIN_SPEED + (initialSpeed - MIN_SPEED) * slowdownFactor;
+        }
+
+        // Apply speed smoothing
+        currentSpeed = targetSpeed * 0.8 + currentSpeed * 0.2;
+
+        // === Apply adjustment factors ===
+        // 不需要使用sign变量，直接在速度设置中处理方向
+        if (direction == VerticallDirection.Up) {
+            // Up: 左正转，右反转
+            nezhaV2.start(leftMotor, currentSpeed * leftAdjustment);
+            nezhaV2.start(rightMotor, -currentSpeed * rightAdjustment);
+        } else {
+            // Down: 左反转，右正转
+            nezhaV2.start(leftMotor, -currentSpeed * leftAdjustment);
+            nezhaV2.start(rightMotor, currentSpeed * rightAdjustment);
+        }
+
+        // === Update position records ===
+        lastLeft = currentLeft;
+        lastRight = currentRight;
+    }
+}
 
     //% group="Basic functions"
     //% block="set %motor at %speed\\%to run %direction %value %mode || %isDelay"
@@ -196,7 +399,7 @@ namespace nezhaV2 {
     export function start(motor: MotorPostion, speed: number): void {
         if (speed < -100) {
             speed = -100
-        }else if (speed > 100) {
+        } else if (speed > 100) {
             speed = 100
         }
         let direction = speed > 0 ? MovementDirection.CW : MovementDirection.CCW
@@ -285,7 +488,7 @@ namespace nezhaV2 {
     }
 
     export function setServoSpeed(speed: number): void {
-        if(speed < 0) speed = 0;
+        if (speed < 0) speed = 0;
         speed *= 9;
         servoSpeedGlobal = speed;
         let buf = pins.createBuffer(8)
@@ -300,6 +503,12 @@ namespace nezhaV2 {
         pins.i2cWriteBuffer(i2cAddr, buf);
 
     }
+    //% group="Application functions"
+    //% weight=410
+    //%block="set the running motor %accelerationProfile profile"
+    export function setAccelerationProfile(accelerationProfile: AccelerationProfile): void {
+        accelerationProfileGlobal = accelerationProfile;
+    }
 
     //% group="Application functions"
     //% weight=410
@@ -309,18 +518,107 @@ namespace nezhaV2 {
         motorRightGlobal = motor_r;
     }
 
+
+    // 通用的加速度函数（可被其他函数调用）
+    function accelerateMotors(
+        motorLeft: MotorPostion,  // 左电机位置
+        motorRight: MotorPostion, // 右电机位置
+        targetSpeedLeft: number,  // 左电机目标速度
+        targetSpeedRight: number, // 右电机目标速度
+        direction: VerticallDirection, // 移动方向
+        accelerationProfile: AccelerationProfile // 加速度曲线
+    ): void {
+        // 处理 None 选项（不加速）
+        if (accelerationProfile === AccelerationProfile.None) {
+            // 直接设置目标速度
+            __start(motorLeft, direction % 2 + 1, targetSpeedLeft);
+            __start(motorRight, (direction + 1) % 2 + 1, targetSpeedRight);
+            return;
+        }
+
+        // 设置阶乘因子
+        let factor = 4;
+
+        // 加速度曲线配置
+        const profiles = [
+            { rate: 4 * factor, max: 100 },  // 慢速
+            { rate: 6 * factor, max: 100 },  // 中速
+            { rate: 8 * factor, max: 100 }   // 快速
+        ];
+
+        // 选择加速度曲线（减1是因为None=0，其他值需要减1才能匹配数组索引）
+        const profileIndex = accelerationProfile - 1;
+        const profile = profiles[profileIndex] || profiles[1]; // 默认使用中速
+
+        const accelRate = profile.rate;
+        const maxSpeedLeft = Math.min(targetSpeedLeft, profile.max);
+        const maxSpeedRight = Math.min(targetSpeedRight, profile.max);
+
+        // 开始加速过程
+        let currentSpeedLeft = 0;
+        let currentSpeedRight = 0;
+        const startTime = input.runningTime();
+
+        // 加速到最大允许速度
+        while (currentSpeedLeft < maxSpeedLeft || currentSpeedRight < maxSpeedRight) {
+            // 计算经过的时间(秒)
+            const elapsed = (input.runningTime() - startTime) / 1000;
+
+            // 计算目标速度(速度 = 加速度 × 时间)
+            let calcTargetSpeedLeft = accelRate * elapsed;
+            let calcTargetSpeedRight = accelRate * elapsed;
+
+            // 限制最大速度
+            if (calcTargetSpeedLeft > maxSpeedLeft) calcTargetSpeedLeft = maxSpeedLeft;
+            if (calcTargetSpeedRight > maxSpeedRight) calcTargetSpeedRight = maxSpeedRight;
+
+            // 应用速度平滑
+            if (currentSpeedLeft < maxSpeedLeft) {
+                currentSpeedLeft = 0.8 * calcTargetSpeedLeft + 0.2 * currentSpeedLeft;
+            }
+
+            if (currentSpeedRight < maxSpeedRight) {
+                currentSpeedRight = 0.8 * calcTargetSpeedRight + 0.2 * currentSpeedRight;
+            }
+
+            // 设置电机速度
+            __start(motorLeft, direction % 2 + 1, currentSpeedLeft);
+            __start(motorRight, (direction + 1) % 2 + 1, currentSpeedRight);
+
+            // 短暂暂停避免过度占用CPU
+            basic.pause(5);
+        }
+
+        // 最终设置用户要求的速度（可能超过加速度曲线的最大值）
+        if (targetSpeedLeft > maxSpeedLeft) {
+            __start(motorLeft, direction % 2 + 1, targetSpeedLeft);
+        }
+        if (targetSpeedRight > maxSpeedRight) {
+            __start(motorRight, (direction + 1) % 2 + 1, targetSpeedRight);
+        }
+    }
+
     //% group="Application functions"
     //% weight=409
     //%block="Set %speed\\% speed and move %direction"
     //% speed.min=0  speed.max=100
-    export function comboRun(speed: number, direction: VerticallDirection): void {
-        if (speed < 0) {
-            speed = 0;
-        } else if (speed > 100) {
-            speed = 100;
-        }
-        __start(motorLeftGlobal, direction % 2 + 1, speed);
-        __start(motorRightGlobal, (direction + 1) % 2 + 1, speed);
+    export function comboRun(
+        speed: number,
+        direction: VerticallDirection,
+    ): void {
+        if (speed < 0) speed = 0;
+        if (speed > 100) speed = 100;
+
+        // 调用通用加速度函数
+        accelerateMotors(
+            motorLeftGlobal, // 左电机位置
+            motorRightGlobal, // 右电机位置
+            speed, // 左电机目标速度
+            speed, // 右电机目标速度
+            direction, // 移动方向
+            accelerationProfileGlobal //全局 加速度曲线
+
+        );
     }
 
 
@@ -339,12 +637,12 @@ namespace nezhaV2 {
     //% weight=404
     //%block="Set the wheel circumference to %value %unit"
     export function setWheelPerimeter(value: number, unit: Uint): void {
-        if(value < 0){
+        if (value < 0) {
             value = 0;
         }
         if (unit == Uint.inch) {
             degreeToDistance = value * 2.54
-        }else{
+        } else {
             degreeToDistance = value
         }
     }
@@ -355,7 +653,7 @@ namespace nezhaV2 {
     //% speed.min=0  speed.max=100
     //% inlineInputMode=inline
     export function comboMove(speed: number, direction: VerticallDirection, value: number, uint: DistanceAndAngleUnit): void {
-        if(speed <= 0){
+        if (speed <= 0) {
             return;
         }
         setServoSpeed(speed)
@@ -389,14 +687,68 @@ namespace nezhaV2 {
         }
         motorDelay(value, mode);
     }
-
     //% group="Application functions"
     //% weight=402
     //%block="set the left wheel speed at %speed_l \\%, right wheel speed at %speed_r \\% and start the motor"
     //% speed_l.min=-100  speed_l.max=100 speed_r.min=-100  speed_r.max=100
-    export function comboStart(speed_l: number, speed_r: number): void {
-        start(motorLeftGlobal, -speed_l);
-        start(motorRightGlobal, speed_r);
+    export function comboStart(
+        speed_l: number,
+        speed_r: number,
+    ): void {
+        // 计算方向参数（使用虚拟方向，实际方向由速度正负决定）
+        const direction = VerticallDirection.Up;
+
+        // 调用通用加速度函数
+        accelerateMotors(
+            motorLeftGlobal,
+            motorRightGlobal,
+            // 左电机目标速度（注意：左电机需要反向）
+            Math.abs(speed_l),
+            // 右电机目标速度
+            Math.abs(speed_r),
+            direction, // 虚拟方向（实际方向由速度正负控制）
+            accelerationProfileGlobal
+        );
+
+        // 设置电机方向
+        __start(motorLeftGlobal, speed_l > 0 ? MovementDirection.CW : MovementDirection.CCW, Math.abs(speed_l));
+        __start(motorRightGlobal, speed_r > 0 ? MovementDirection.CW : MovementDirection.CCW, Math.abs(speed_r));
+    }
+
+    //% group="Application functions"
+    //% weight=403
+    //%block="Combination Motor Move at %speed to %direction %value %uint "
+    //% speed.min=0  speed.max=100
+    //% inlineInputMode=inline
+    export function move1(speed: number, direction: VerticallDirection, value: number, uint: DistanceAndAngleUnit
+    ): void {
+        let accelerationProfile = accelerationProfileGlobal;
+        if (accelerationProfile === AccelerationProfile.None) {
+            nezhaV2.comboMove(speed, direction, value, uint)
+        }
+        else {
+            let mode;
+            switch (uint) {
+                case DistanceAndAngleUnit.Circle:
+                case DistanceAndAngleUnit.Degree:
+                case DistanceAndAngleUnit.Second:
+                    break;
+                case DistanceAndAngleUnit.cm:
+                    value = 360 * value / degreeToDistance
+                    break;
+                case DistanceAndAngleUnit.inch:
+                    value = 360 * value * 2.54 / degreeToDistance
+                    break;
+            }
+            control_motor(
+                value,
+                accelerationProfile,
+                motorLeftGlobal,
+                motorRightGlobal,
+                direction
+            );
+        }
+
     }
 
     //% group="export functions"
