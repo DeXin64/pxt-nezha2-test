@@ -667,13 +667,14 @@ namespace nezhaV2 {
 
         // === Motor initialization ===
         if (direction == VerticallDirection.Up) {
-            // Up: 左正转，右反转
-            nezhaV2.start(leftMotor, currentSpeed);
-            nezhaV2.start(rightMotor, -currentSpeed);
-        } else {
             // Down: 左反转，右正转
             nezhaV2.start(leftMotor, -currentSpeed);
             nezhaV2.start(rightMotor, currentSpeed);
+        } else {
+            // Up: 左正转，右反转
+            nezhaV2.start(leftMotor, currentSpeed);
+            nezhaV2.start(rightMotor, -currentSpeed);
+
         }
 
         let lastLeft = 0;
@@ -699,11 +700,11 @@ namespace nezhaV2 {
 
             // 计算相对于起始位置的变化量
             // 关键点：根据方向正确处理位移符号
-            const currentLeft = (direction === VerticallDirection.Up)
+            const currentLeft = (direction === VerticallDirection.Down)
                 ? (rawLeft - startLeft)       // Up: 左正转 -> 位移增加
                 : (startLeft - rawLeft);      // Down: 左反转 -> 位移增加（startLeft - rawLeft）
 
-            const currentRight = (direction === VerticallDirection.Up)
+            const currentRight = (direction === VerticallDirection.Down)
                 ? (startRight - rawRight)     // Up: 右反转 -> 位移增加（startRight - rawRight）
                 : (rawRight - startRight);     // Down: 右正转 -> 位移增加
 
@@ -782,13 +783,14 @@ namespace nezhaV2 {
             // === Apply adjustment factors ===
             // 不需要使用sign变量，直接在速度设置中处理方向
             if (direction == VerticallDirection.Up) {
-                // Up: 左正转，右反转
-                nezhaV2.start(leftMotor, currentSpeed * leftAdjustment);
-                nezhaV2.start(rightMotor, -currentSpeed * rightAdjustment);
-            } else {
                 // Down: 左反转，右正转
                 nezhaV2.start(leftMotor, -currentSpeed * leftAdjustment);
                 nezhaV2.start(rightMotor, currentSpeed * rightAdjustment);
+            } else {
+                // Up: 左正转，右反转
+                nezhaV2.start(leftMotor, currentSpeed * leftAdjustment);
+                nezhaV2.start(rightMotor, -currentSpeed * rightAdjustment);
+
             }
 
             // === Update position records ===
