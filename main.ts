@@ -546,19 +546,33 @@ namespace nezhaV2 {
         // 修复类型检查问题：使用 switch 语句处理所有单位类型
         switch (uint) {
             case DistanceAndAngleUnit.Second:
+
                 // 计算目标角度 = 速度 × 时间 × 转换系数
                 // 假设：速度100对应360度/秒（根据实际电机特性调整）
                 const degreesPerSecond = speed * 3.6; // 100对应360度/秒
                 const targetDegrees = degreesPerSecond * value;
+                if (accelerationProfile === AccelerationProfile.None) {
+                    control_motor(
+                        targetDegrees,
+                        3,
+                        motorLeftGlobal,
+                        motorRightGlobal,
+                        direction,
+                        value * 1000 // 将秒转换为毫秒作为最大时间限制
+                    );
 
-                control_motor(
-                    targetDegrees,
-                    accelerationProfile,
-                    motorLeftGlobal,
-                    motorRightGlobal,
-                    direction,
-                    value * 1000 // 将秒转换为毫秒作为最大时间限制
-                );
+                }
+                else {
+                    control_motor(
+                        targetDegrees,
+                        accelerationProfile,
+                        motorLeftGlobal,
+                        motorRightGlobal,
+                        direction,
+                        value * 1000 // 将秒转换为毫秒作为最大时间限制
+                    );
+                }
+
                 break;
 
             default:
