@@ -537,7 +537,7 @@ namespace nezhaV2 {
 
     //% group="Application functions"
     //% weight=403
-    //%block="Combination Motor Move at %speed to %direction %value %uint "
+    //%block="Combination Motor Move at %speed to %direction straight %value %uint "
     //% speed.min=0  speed.max=100
     //% inlineInputMode=inline
     export function move1(speed: number, direction: VerticallDirection, value: number, uint: DistanceAndAngleUnit): void {
